@@ -1,10 +1,5 @@
 pipeline {
-    agent {
-        docker {
-            image 'docker:latest'
-            args '-v /var/run/docker.sock:/var/run/docker.sock'
-        }
-    }
+    agent any // Run the pipeline on any available Jenkins agent
 
     stages {
         stage('Build Docker Image') {
@@ -14,15 +9,25 @@ pipeline {
                     def imageTag = "${env.BUILD_NUMBER}"
                     def fullImageName = "${imageName}:${imageTag}"
 
-                    writeFile(file: 'Dockerfile', text: """
-                        FROM nginx:alpine
-                        COPY . /usr/share/nginx/html
-                        EXPOSE 8080
-                        CMD ["nginx", "-g", "daemon off;"]
-                    """)
+                    // Run Docker commands within a 'node' to ensure agent availability
+                    node {
+                        stage('Docker Environment') {
+                            steps {
+                                // You might need to ensure Docker is available on the Jenkins agent
+                                // depending on your Jenkins setup.
 
-                    sh "docker build -t ${fullImageName} ."
-                    env.DOCKER_IMAGE = fullImageName
+                                writeFile(file: 'Dockerfile', text: """
+                                    FROM nginx:alpine
+                                    COPY . /usr/share/nginx/html
+                                    EXPOSE 8080
+                                    CMD ["nginx", "-g", "daemon off;"]
+                                """)
+
+                                sh "docker build -t ${fullImageName} ."
+                                env.DOCKER_IMAGE = fullImageName
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -35,9 +40,9 @@ pipeline {
 
                     sh """
                         oc login --server=${openshiftServer} \
-                               --username=developer \
-                               --password=developer \
-                               --insecure-skip-tls-verify=true
+                            --username=developer \
+                            --password=developer \
+                            --insecure-skip-tls-verify=true
                         oc new-project ${appName} --display-name='Neon Heart App' --skip-config-write || true
                         oc project ${appName}
                         oc new-app --docker-image=${env.DOCKER_IMAGE} --name=${appName}
@@ -53,7 +58,14 @@ pipeline {
     post {
         always {
             script {
-                sh 'docker rmi ${DOCKER_IMAGE} || true'
+                // You might need to run this within a 'node' with Docker access
+                node {
+                    stage('Cleanup Docker Image') {
+                        steps {
+                            sh 'docker rmi ${DOCKER_IMAGE} || true'
+                        }
+                    }
+                }
             }
         }
     }
