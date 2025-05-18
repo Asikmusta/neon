@@ -6,31 +6,23 @@ pipeline {
             steps {
                 script {
                     openshift.withCluster() {
-                        // Create project if it doesn't exist
-                        if (!openshift.project('neon-app')) {
-                            openshift.newProject('neon-app', '--display-name="Neon Application"')
-                        }
-
                         openshift.withProject('neon-app') {
-                            // Create required ImageStreams
-                            ['nginx', 'neon-app'].each { isName ->
-                                if (!openshift.selector('is', isName).exists()) {
-                                    openshift.create("""apiVersion: image.openshift.io/v1
+                            // Create ImageStreams if they don't exist
+                            if (!openshift.selector('is', 'nginx').exists()) {
+                                openshift.create('''apiVersion: image.openshift.io/v1
 kind: ImageStream
 metadata:
-  name: ${isName}""")
-                                }
+  name: nginx''')
+                            }
+                            
+                            if (!openshift.selector('is', 'neon-app').exists()) {
+                                openshift.create('''apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: neon-app''')
                             }
 
-                            // Create Nginx ImageStream tag
-                            openshift.create('''apiVersion: image.openshift.io/v1
-kind: ImageStreamTag
-metadata:
-  name: nginx:latest
-image:
-  dockerImageReference: nginx:latest''')
-
-                            // Create BuildConfig if not exists
+                            // Create BuildConfig if it doesn't exist
                             if (!openshift.selector('bc', 'neon-app').exists()) {
                                 openshift.create('''apiVersion: build.openshift.io/v1
 kind: BuildConfig
@@ -39,23 +31,19 @@ metadata:
 spec:
   source:
     type: Binary
-    binary: {}
   strategy:
-    type: Source
-    sourceStrategy:
+    type: Docker
+    dockerStrategy:
       from:
         kind: ImageStreamTag
         name: nginx:latest
-      env:
-      - name: NGINX_DOCUMENT_ROOT
-        value: /usr/share/nginx/html
   output:
     to:
       kind: ImageStreamTag
       name: neon-app:latest''')
                             }
 
-                            // Create DeploymentConfig if not exists
+                            // Create DeploymentConfig if it doesn't exist
                             if (!openshift.selector('dc', 'neon-app').exists()) {
                                 openshift.create('''apiVersion: apps.openshift.io/v1
 kind: DeploymentConfig
@@ -74,25 +62,9 @@ spec:
       - name: neon-app
         image: neon-app:latest
         ports:
-        - containerPort: 80
-        volumeMounts:
-        - name: webroot
-          mountPath: /usr/share/nginx/html
-      volumes:
-      - name: webroot
-        emptyDir: {}
-  triggers:
-  - type: ConfigChange
-  - type: ImageChange
-    imageChangeParams:
-      automatic: true
-      containerNames:
-      - neon-app
-      from:
-        kind: ImageStreamTag
-        name: neon-app:latest''')
-
-                                // Create Service and Route
+        - containerPort: 80''')
+                                
+                                // Expose the service
                                 openshift.selector('dc', 'neon-app').expose()
                             }
                         }
@@ -106,18 +78,12 @@ spec:
                 script {
                     openshift.withCluster() {
                         openshift.withProject('neon-app') {
-                            try {
-                                // Start binary build with current directory contents
-                                def build = openshift.selector('bc', 'neon-app').startBuild('--from-dir=.', '--wait')
-                                
-                                // Print build logs for debugging
-                                def logs = openshift.selector('build', build.name()).logs()
-                                echo "Build Logs:\n${logs}"
-                                
-                                echo "Build ${build.name()} completed successfully"
-                            } catch (Exception e) {
-                                error "Build failed: ${e.message}"
-                            }
+                            def build = openshift.selector('bc', 'neon-app').startBuild('--from-dir=.', '--wait')
+                            echo "Build ${build.name()} completed"
+                            
+                            // Get build logs
+                            def logs = openshift.selector("build", build.name()).logs()
+                            echo "Build logs:\n${logs}"
                         }
                     }
                 }
@@ -129,15 +95,15 @@ spec:
                 script {
                     openshift.withCluster() {
                         openshift.withProject('neon-app') {
-                            // Verify deployment is ready
+                            // Wait for deployment to complete
                             def dc = openshift.selector('dc', 'neon-app')
-                            dc.untilEach(1) {
-                                return it.object().status.readyReplicas == 1
+                            dc.untilEach {
+                                return it.object().status.availableReplicas == 1
                             }
                             
-                            // Get application URL
+                            // Get route URL
                             def route = openshift.selector('route', 'neon-app').object()
-                            echo "Application is ready at: http://${route.spec.host}"
+                            echo "Application deployed at: http://${route.spec.host}"
                         }
                     }
                 }
@@ -146,36 +112,23 @@ spec:
     }
 
     post {
-        always {
-            echo "Pipeline execution completed"
-        }
-        success {
-            script {
-                openshift.withCluster() {
-                    openshift.withProject('neon-app') {
-                        def route = openshift.selector('route', 'neon-app').object()
-                        echo "SUCCESS: Neon application is available at http://${route.spec.host}"
-                    }
-                }
-            }
-        }
         failure {
-            echo "FAILURE: Pipeline failed - check logs for details"
+            echo "Pipeline failed - checking for errors"
             script {
                 openshift.withCluster() {
                     openshift.withProject('neon-app') {
-                        // Try to get build logs if available
-                        try {
-                            def builds = openshift.selector('build').objects()
-                            builds.each { build ->
-                                if (build.status.phase == 'Failed') {
-                                    echo "Failed build logs (${build.metadata.name}):"
-                                    echo openshift.selector('build', build.metadata.name).logs()
-                                }
+                        // Get failed builds
+                        def builds = openshift.selector('build').objects()
+                        builds.each { build ->
+                            if (build.status.phase == 'Failed') {
+                                echo "Failed build logs (${build.metadata.name}):"
+                                echo openshift.selector("build", build.metadata.name).logs()
                             }
-                        } catch (Exception e) {
-                            echo "Could not retrieve build logs: ${e.message}"
                         }
+                        
+                        // Get pod status
+                        echo "Current pod status:"
+                        echo openshift.selector('pods').describe()
                     }
                 }
             }
