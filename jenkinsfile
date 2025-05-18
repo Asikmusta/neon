@@ -4,7 +4,7 @@ pipeline {
     stages {
         stage('Checkout') {
             steps {
-                git url: 'your-git-repository-url',
+                git url: 'https://github.com/Asikmusta/neon.git',
                     branch: 'main'  // Explicitly specify main branch
             }
         }
