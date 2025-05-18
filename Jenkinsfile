@@ -6,21 +6,29 @@ pipeline {
             steps {
                 script {
                     openshift.withCluster() {
-                        // Switch to neon-app project (creates if doesn't exist)
+                        // Create project if it doesn't exist
+                        if (!openshift.project('neon-app')) {
+                            openshift.newProject('neon-app', '--display-name="Neon Application"')
+                        }
+
                         openshift.withProject('neon-app') {
-                            // Create Nginx ImageStream if not exists
-                            if (!openshift.selector('is', 'nginx').exists()) {
-                                openshift.create('''apiVersion: image.openshift.io/v1
+                            // Create required ImageStreams
+                            ['nginx', 'neon-app'].each { isName ->
+                                if (!openshift.selector('is', isName).exists()) {
+                                    openshift.create("""apiVersion: image.openshift.io/v1
 kind: ImageStream
 metadata:
-  name: nginx
-spec:
-  tags:
-  - name: latest
-    from:
-      kind: DockerImage
-      name: nginx:latest''')
+  name: ${isName}""")
+                                }
                             }
+
+                            // Create Nginx ImageStream tag
+                            openshift.create('''apiVersion: image.openshift.io/v1
+kind: ImageStreamTag
+metadata:
+  name: nginx:latest
+image:
+  dockerImageReference: nginx:latest''')
 
                             // Create BuildConfig if not exists
                             if (!openshift.selector('bc', 'neon-app').exists()) {
@@ -33,11 +41,14 @@ spec:
     type: Binary
     binary: {}
   strategy:
-    type: Docker
-    dockerStrategy:
+    type: Source
+    sourceStrategy:
       from:
         kind: ImageStreamTag
         name: nginx:latest
+      env:
+      - name: NGINX_DOCUMENT_ROOT
+        value: /usr/share/nginx/html
   output:
     to:
       kind: ImageStreamTag
@@ -95,26 +106,38 @@ spec:
                 script {
                     openshift.withCluster() {
                         openshift.withProject('neon-app') {
-                            // Start binary build with current directory contents
-                            def build = openshift.selector('bc', 'neon-app').startBuild('--from-dir=.', '--wait')
-                            echo "Build ${build.name()} completed"
+                            try {
+                                // Start binary build with current directory contents
+                                def build = openshift.selector('bc', 'neon-app').startBuild('--from-dir=.', '--wait')
+                                
+                                // Print build logs for debugging
+                                def logs = openshift.selector('build', build.name()).logs()
+                                echo "Build Logs:\n${logs}"
+                                
+                                echo "Build ${build.name()} completed successfully"
+                            } catch (Exception e) {
+                                error "Build failed: ${e.message}"
+                            }
                         }
                     }
                 }
             }
         }
 
-        stage('Deploy Application') {
+        stage('Verify Deployment') {
             steps {
                 script {
                     openshift.withCluster() {
                         openshift.withProject('neon-app') {
-                            // Trigger deployment
-                            openshift.selector('dc', 'neon-app').rollout().latest()
+                            // Verify deployment is ready
+                            def dc = openshift.selector('dc', 'neon-app')
+                            dc.untilEach(1) {
+                                return it.object().status.readyReplicas == 1
+                            }
                             
                             // Get application URL
                             def route = openshift.selector('route', 'neon-app').object()
-                            echo "Application deployed: http://${route.spec.host}"
+                            echo "Application is ready at: http://${route.spec.host}"
                         }
                     }
                 }
@@ -123,6 +146,9 @@ spec:
     }
 
     post {
+        always {
+            echo "Pipeline execution completed"
+        }
         success {
             script {
                 openshift.withCluster() {
@@ -135,6 +161,24 @@ spec:
         }
         failure {
             echo "FAILURE: Pipeline failed - check logs for details"
+            script {
+                openshift.withCluster() {
+                    openshift.withProject('neon-app') {
+                        // Try to get build logs if available
+                        try {
+                            def builds = openshift.selector('build').objects()
+                            builds.each { build ->
+                                if (build.status.phase == 'Failed') {
+                                    echo "Failed build logs (${build.metadata.name}):"
+                                    echo openshift.selector('build', build.metadata.name).logs()
+                                }
+                            }
+                        } catch (Exception e) {
+                            echo "Could not retrieve build logs: ${e.message}"
+                        }
+                    }
+                }
+            }
         }
     }
 }
