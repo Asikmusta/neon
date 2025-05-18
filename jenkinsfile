@@ -1,0 +1,157 @@
+pipeline {
+    agent any
+
+    environment {
+        APP_NAME = 'neon-heart'
+        NAMESPACE = 'your-namespace'  // Update with your target namespace
+        REPO_URL = 'https://github.com/Asikmusta/neon.git'
+    }
+
+    stages {
+        stage('Clone Repository') {
+            steps {
+                checkout([$class: 'GitSCM',
+                    branches: [[name: '*/main']],
+                    userRemoteConfigs: [[url: env.REPO_URL]]])
+            }
+        }
+
+        stage('Verify Files') {
+            steps {
+                script {
+                    // Verify the dist directory exists with required files
+                    if (!fileExists('dist/index.html') {
+                        error('Missing dist/index.html - build failed')
+                    }
+                    echo 'All required files present in dist directory'
+                }
+            }
+        }
+
+        stage('Prepare OpenShift Resources') {
+            steps {
+                script {
+                    // Create dynamic deployment configuration
+                    def indexContent = readFile('dist/index.html').replaceAll('"', '\\\\"')
+                    def scriptContent = readFile('dist/script.js').replaceAll('"', '\\\\"')
+                    def styleContent = readFile('dist/style.css').replaceAll('"', '\\\\"')
+
+                    writeFile file: 'openshift.yml', text: """
+                        apiVersion: v1
+                        kind: List
+                        items:
+                        - apiVersion: v1
+                          kind: Service
+                          metadata:
+                            name: ${APP_NAME}
+                            labels:
+                              app: ${APP_NAME}
+                          spec:
+                            ports:
+                            - port: 8080
+                              targetPort: 8080
+                            selector:
+                              app: ${APP_NAME}
+                        - apiVersion: apps/v1
+                          kind: Deployment
+                          metadata:
+                            name: ${APP_NAME}
+                            labels:
+                              app: ${APP_NAME}
+                          spec:
+                            replicas: 1
+                            selector:
+                              matchLabels:
+                                app: ${APP_NAME}
+                            template:
+                              metadata:
+                                labels:
+                                  app: ${APP_NAME}
+                              spec:
+                                containers:
+                                - name: ${APP_NAME}
+                                  image: nginxinc/nginx-unprivileged:alpine
+                                  ports:
+                                  - containerPort: 8080
+                                  volumeMounts:
+                                  - name: web-content
+                                    mountPath: /usr/share/nginx/html
+                                volumes:
+                                - name: web-content
+                                  configMap:
+                                    name: ${APP_NAME}-content
+                        - apiVersion: v1
+                          kind: ConfigMap
+                          metadata:
+                            name: ${APP_NAME}-content
+                          data:
+                            index.html: |
+                              ${indexContent}
+                            script.js: |
+                              ${scriptContent}
+                            style.css: |
+                              ${styleContent}
+                        - apiVersion: route.openshift.io/v1
+                          kind: Route
+                          metadata:
+                            name: ${APP_NAME}
+                            labels:
+                              app: ${APP_NAME}
+                          spec:
+                            to:
+                              kind: Service
+                              name: ${APP_NAME}
+                            port:
+                              targetPort: 8080
+                    """
+                }
+            }
+        }
+
+        stage('Deploy to OpenShift') {
+            steps {
+                script {
+                    // Authenticate with OpenShift
+                    withCredentials([usernamePassword(
+                        credentialsId: 'openshift-creds',
+                        usernameVariable: 'USERNAME',
+                        passwordVariable: 'PASSWORD'
+                    )]) {
+                        sh """
+                            oc login -u \$USERNAME -p \$PASSWORD \
+                            --server=https://api.crc.testing:6443 \
+                            --insecure-skip-tls-verify=true
+                        """
+                    }
+
+                    // Apply configuration
+                    sh """
+                        oc apply -f openshift.yml -n ${NAMESPACE}
+                    """
+
+                    // Get application URL
+                    def ROUTE_URL = sh(
+                        script: "oc get route ${APP_NAME} -n ${NAMESPACE} -o jsonpath='{.spec.host}'",
+                        returnStdout: true
+                    ).trim()
+                    echo "Application successfully deployed to: http://${ROUTE_URL}"
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            slackSend(
+                color: "good",
+                message: "SUCCESS: Neon Heart deployed to OpenShift (Build ${env.BUILD_NUMBER})"
+            )
+        }
+        failure {
+            slackSend(
+                color: "danger",
+                message: "FAILED: Neon Heart deployment (Build ${env.BUILD_NUMBER})"
+            )
+        }
+    }
+}
