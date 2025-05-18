@@ -31,9 +31,11 @@ metadata:
 spec:
   source:
     type: Binary
+    binary: {}
   strategy:
     type: Docker
     dockerStrategy:
+      dockerfilePath: Dockerfile
       from:
         kind: ImageStreamTag
         name: nginx:latest
