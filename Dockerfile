@@ -1,6 +1,7 @@
 FROM nginx:latest
 
-RUN sed -i 's/listen\(.*\)80;/listen 8080;/g' /etc/nginx/conf.d/default.conf
+RUN sed -i 's/listen\(.*\)80;/listen 8080;/g' /etc/nginx/conf.d/default.conf && \
+    sed -i 's/\/var\/run\/nginx.pid/\/tmp\/nginx.pid/g' /etc/nginx/nginx.conf
 
 # Create required directories with correct permissions
 RUN mkdir -p /var/cache/nginx/client_temp && \
