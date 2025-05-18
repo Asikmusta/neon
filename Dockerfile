@@ -1,12 +1,19 @@
 FROM nginx:latest
 
-# Create necessary directories with correct permissions
+# Create required directories with correct permissions
 RUN mkdir -p /var/cache/nginx/client_temp && \
-    chmod -R 755 /var/cache/nginx && \
-    chown -R nginx:nginx /var/cache/nginx
+    mkdir -p /var/cache/nginx/proxy_temp && \
+    mkdir -p /var/cache/nginx/fastcgi_temp && \
+    mkdir -p /var/cache/nginx/uwsgi_temp && \
+    mkdir -p /var/cache/nginx/scgi_temp && \
+    chown -R nginx:nginx /var/cache/nginx && \
+    chmod -R 755 /var/cache/nginx
 
 # Copy your content
-COPY . /usr/share/nginx/html
+COPY --chown=nginx:nginx . /usr/share/nginx/html
 
-# Set the user (nginx user already exists in the base image)
+# Switch to nginx user
 USER nginx
+
+# Expose port
+EXPOSE 8080
