@@ -1,54 +1,26 @@
 pipeline {
-    agent any
+    agent {
+        docker {
+            image 'docker:latest'
+            args '-v /var/run/docker.sock:/var/run/docker.sock'
+        }
+    }
 
     stages {
-        stage('Checkout') {
-            steps {
-                checkout([
-                    $class: 'GitSCM',
-                    branches: [[name: '*/main']],
-                    extensions: [],
-                    userRemoteConfigs: [[
-                        url: 'https://github.com/Asikmusta/neon.git'
-                    ]]
-                ])
-            }
-        }
-        // Rest of your pipeline remains the same...
         stage('Build Docker Image') {
             steps {
                 script {
-                    // Define image name and tag
                     def imageName = 'neon-heart-app'
                     def imageTag = "${env.BUILD_NUMBER}"
                     def fullImageName = "${imageName}:${imageTag}"
 
-                    // Create Dockerfile with port 8080
                     writeFile(file: 'Dockerfile', text: """
                         FROM nginx:alpine
                         COPY . /usr/share/nginx/html
                         EXPOSE 8080
-                        CMD ["nginx", "-g", "daemon off;", "-c", "/etc/nginx/nginx.conf"]
+                        CMD ["nginx", "-g", "daemon off;"]
                     """)
 
-                    // Create custom nginx config for port 8080
-                    writeFile(file: 'nginx.conf', text: """
-                        events {
-                            worker_connections  1024;
-                        }
-                        http {
-                            server {
-                                listen       8080;
-                                server_name  localhost;
-                                location / {
-                                    root   /usr/share/nginx/html;
-                                    index  index.html index.htm;
-                                }
-                            }
-                        }
-                    """)
-
-                    // Build the Docker image
                     sh "docker build -t ${fullImageName} ."
                     env.DOCKER_IMAGE = fullImageName
                 }
@@ -61,23 +33,18 @@ pipeline {
                     def appName = 'neon-heart'
                     def openshiftServer = 'https://api.crc.testing:6443'
 
-                    // Login to OpenShift (using default CRC developer credentials)
-                    sh "oc login --server=${openshiftServer} --username=developer --password=developer --insecure-skip-tls-verify=true"
-
-                    // Create project if needed
                     sh """
+                        oc login --server=${openshiftServer} \
+                               --username=developer \
+                               --password=developer \
+                               --insecure-skip-tls-verify=true
                         oc new-project ${appName} --display-name='Neon Heart App' --skip-config-write || true
                         oc project ${appName}
-                    """
-
-                    // Deploy the application
-                    sh """
                         oc new-app --docker-image=${env.DOCKER_IMAGE} --name=${appName}
                         oc expose svc/${appName} --port=8080
                         oc create route edge --service=${appName} --port=8080 --hostname=${appName}.apps-crc.testing
                     """
-
-                    echo "Application will be accessible at: http://${appName}.apps-crc.testing:8080"
+                    echo "Application accessible at: http://${appName}.apps-crc.testing"
                 }
             }
         }
@@ -86,7 +53,6 @@ pipeline {
     post {
         always {
             script {
-                // Clean up Docker
                 sh 'docker rmi ${DOCKER_IMAGE} || true'
             }
         }
