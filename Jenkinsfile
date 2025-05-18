@@ -64,7 +64,7 @@ spec:
       - name: neon-app
         image: neon-app:latest
         ports:
-        - containerPort: 80''')
+        - containerPort: 8080''')
                                 
                                 // Expose the service
                                 openshift.selector('dc', 'neon-app').expose()
