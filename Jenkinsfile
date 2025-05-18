@@ -1,47 +1,140 @@
 pipeline {
     agent any
-    
+
     stages {
-        stage('Build') {
+        stage('Create OpenShift Resources') {
             steps {
                 script {
                     openshift.withCluster() {
-                        openshift.withProject() {
-                            // Create build config if it doesn't exist
-                            if (!openshift.selector('bc', 'neon-app').exists()) {
-                                openshift.newBuild('--name=neon-app', '--image-stream=nginx:latest', '--binary')
+                        // Switch to neon-app project (creates if doesn't exist)
+                        openshift.withProject('neon-app') {
+                            // Create Nginx ImageStream if not exists
+                            if (!openshift.selector('is', 'nginx').exists()) {
+                                openshift.create('''apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: nginx
+spec:
+  tags:
+  - name: latest
+    from:
+      kind: DockerImage
+      name: nginx:latest''')
                             }
-                            
-                            // Start binary build
-                            openshift.selector('bc', 'neon-app').startBuild('--from-dir=.', '--wait')
+
+                            // Create BuildConfig if not exists
+                            if (!openshift.selector('bc', 'neon-app').exists()) {
+                                openshift.create('''apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: neon-app
+spec:
+  source:
+    type: Binary
+    binary: {}
+  strategy:
+    type: Docker
+    dockerStrategy:
+      from:
+        kind: ImageStreamTag
+        name: nginx:latest
+  output:
+    to:
+      kind: ImageStreamTag
+      name: neon-app:latest''')
+                            }
+
+                            // Create DeploymentConfig if not exists
+                            if (!openshift.selector('dc', 'neon-app').exists()) {
+                                openshift.create('''apiVersion: apps.openshift.io/v1
+kind: DeploymentConfig
+metadata:
+  name: neon-app
+spec:
+  replicas: 1
+  selector:
+    app: neon-app
+  template:
+    metadata:
+      labels:
+        app: neon-app
+    spec:
+      containers:
+      - name: neon-app
+        image: neon-app:latest
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: webroot
+          mountPath: /usr/share/nginx/html
+      volumes:
+      - name: webroot
+        emptyDir: {}
+  triggers:
+  - type: ConfigChange
+  - type: ImageChange
+    imageChangeParams:
+      automatic: true
+      containerNames:
+      - neon-app
+      from:
+        kind: ImageStreamTag
+        name: neon-app:latest''')
+
+                                // Create Service and Route
+                                openshift.selector('dc', 'neon-app').expose()
+                            }
                         }
                     }
                 }
             }
         }
-        
-        stage('Deploy') {
+
+        stage('Build Application') {
             steps {
                 script {
                     openshift.withCluster() {
-                        openshift.withProject() {
-                            // Create deployment config if it doesn't exist
-                            if (!openshift.selector('dc', 'neon-app').exists()) {
-                                openshift.newApp('neon-app:latest', '--name=neon-app')
-                                
-                                // Expose the service
-                                openshift.selector('svc', 'neon-app').expose()
-                                
-                                // Patch the deployment to use the correct port
-                                openshift.selector('dc', 'neon-app').patch('{"spec":{"template":{"spec":{"containers":[{"name":"neon-app","ports":[{"containerPort":8080}]}]}}}}')
-                            }
-                            
-                            // Deploy the latest build
-                            openshift.selector('dc', 'neon-app').rollout().latest()
+                        openshift.withProject('neon-app') {
+                            // Start binary build with current directory contents
+                            def build = openshift.selector('bc', 'neon-app').startBuild('--from-dir=.', '--wait')
+                            echo "Build ${build.name()} completed"
                         }
                     }
                 }
             }
+        }
+
+        stage('Deploy Application') {
+            steps {
+                script {
+                    openshift.withCluster() {
+                        openshift.withProject('neon-app') {
+                            // Trigger deployment
+                            openshift.selector('dc', 'neon-app').rollout().latest()
+                            
+                            // Get application URL
+                            def route = openshift.selector('route', 'neon-app').object()
+                            echo "Application deployed: http://${route.spec.host}"
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            script {
+                openshift.withCluster() {
+                    openshift.withProject('neon-app') {
+                        def route = openshift.selector('route', 'neon-app').object()
+                        echo "SUCCESS: Neon application is available at http://${route.spec.host}"
+                    }
+                }
+            }
+        }
+        failure {
+            echo "FAILURE: Pipeline failed - check logs for details"
         }
     }
 }
