@@ -4,11 +4,17 @@ pipeline {
     stages {
         stage('Checkout') {
             steps {
-                git url: 'https://github.com/Asikmusta/neon',
-                    branch: 'main'  // Explicitly specify main branch
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: '*/main']],
+                    extensions: [],
+                    userRemoteConfigs: [[
+                        url: 'https://github.com/Asikmusta/neon.git'
+                    ]]
+                ])
             }
         }
-
+        // Rest of your pipeline remains the same...
         stage('Build Docker Image') {
             steps {
                 script {
